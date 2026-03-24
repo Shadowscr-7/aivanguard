@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   traefik:
     image: traefik:v3.0
@@ -40,5 +38,4 @@ volumes:
 
 networks:
   traefik-public:
-    name: traefik-public
-    driver: bridge
+    external: true
