@@ -1,0 +1,319 @@
+{
+  "name": "02 - Campaña Outbound WhatsApp (Rate Limited)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 3
+            }
+          ]
+        }
+      },
+      "id": "b2000001-0001-4000-8000-000000000001",
+      "name": "Trigger cada 3 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// Verifica si estamos en horario laboral\n// Zona horaria: America/Montevideo (UTC-3)\n// Horario permitido: 10:00 - 19:00 L-V\n// ============================================\n\nconst now = new Date();\n\n// Convertir a hora de Uruguay (UTC-3)\nconst utcHour = now.getUTCHours();\nconst uyHour = (utcHour - 3 + 24) % 24;\nconst dayOfWeek = now.getUTCDay(); // 0=Dom, 6=Sab\n\n// Horario laboral: 10:00 a 19:00, Lunes a Viernes\nconst isBusinessHours = uyHour >= 10 && uyHour < 19 && dayOfWeek >= 1 && dayOfWeek <= 5;\n\nreturn [{\n  json: {\n    isBusinessHours,\n    horaUY: uyHour,\n    diaSemana: dayOfWeek,\n    timestamp: now.toISOString()\n  }\n}];"
+      },
+      "id": "b2000001-0001-4000-8000-000000000002",
+      "name": "Verificar Horario",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-business-hours",
+              "leftValue": "={{ $json.isBusinessHours }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000001-0001-4000-8000-000000000003",
+      "name": "En Horario",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [690, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  COALESCE(\n    (SELECT cantidad FROM envios_diarios WHERE fecha = CURRENT_DATE),\n    0\n  ) AS enviados_hoy,\n  COALESCE(\n    (SELECT value::int FROM config WHERE key = 'max_envios_dia'),\n    30\n  ) AS max_dia;",
+        "options": {}
+      },
+      "id": "b2000001-0001-4000-8000-000000000004",
+      "name": "Contar Envios Hoy",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [920, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "PostgreSQL AI Vanguard"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-under-limit",
+              "leftValue": "={{ $json.enviados_hoy }}",
+              "rightValue": "={{ $json.max_dia }}",
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000001-0001-4000-8000-000000000005",
+      "name": "Bajo Limite Diario",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM leads\nWHERE status = 'nuevo'\nAND score_prospecto >= 40\nORDER BY score_prospecto DESC, fecha_creacion ASC\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "b2000001-0001-4000-8000-000000000006",
+      "name": "Obtener Mejor Lead",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1360, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "PostgreSQL AI Vanguard"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-lead-exists",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000001-0001-4000-8000-000000000007",
+      "name": "Hay Lead Disponible",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1580, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================\n// Personaliza el mensaje según el rubro del comercio\n// Usa español rioplatense (Uruguay)\n// ============================================\n\nconst lead = $json;\nconst nombre = lead.nombre;\nconst rubro = (lead.rubro || 'comercio').toLowerCase();\nconst ciudad = lead.ciudad || '';\n\n// Templates por categoría de rubro\nconst templates = {\n  gastronomia: [\n    `Hola! 👋 Vi que tienen ${nombre} en ${ciudad}. ¿Manejan muchas consultas por WhatsApp sobre el menú, reservas o delivery?\\n\\nEstamos ayudando a locales gastronómicos a responder automáticamente y no perder clientes cuando no pueden contestar al momento.\\n\\n¿Les copa saber más? Sin compromiso 🙌`,\n    `Buenas! Vi ${nombre} en ${ciudad} y me pareció re interesante. Estamos trabajando con restaurantes de la zona para automatizar pedidos y reservas por WhatsApp.\\n\\n¿Tienen 2 minutos para que les cuente? 😊`\n  ],\n  estetica: [\n    `Hola! 👋 Vi que tienen ${nombre} en ${ciudad}. Estamos ayudando a centros de estética y peluquerías a automatizar la agenda de turnos y las consultas por WhatsApp, para que no pierdan reservas.\\n\\n¿Tienen 2 minutos para que les cuente cómo funciona? Sin compromiso 😊`,\n    `Buenas! Vi ${nombre} y quería contactarlos. Muchas peluquerías y centros de estética nos cuentan que pierden turnos porque no llegan a responder WhatsApp a tiempo.\\n\\nEstamos ayudando a resolver eso con automatizaciones simples. ¿Les interesa saber más? 🙌`\n  ],\n  salud: [\n    `Hola! 👋 Vi que tienen ${nombre} en ${ciudad}. Estamos ayudando a consultorios y clínicas a gestionar turnos y consultas de pacientes de forma automática por WhatsApp.\\n\\n¿Les interesa saber cómo funciona? Sin compromiso 🙌`,\n    `Buenas! Vi ${nombre} y me pareció que podríamos ayudarlos. Muchos consultorios nos dicen que pierden pacientes porque no llegan a responder a tiempo.\\n\\nTenemos algo que puede servir. ¿2 minutos para contarles? 😊`\n  ],\n  servicios: [\n    `Hola! 👋 Vi ${nombre} en ${ciudad} y quería contactarlos. Estamos ayudando a negocios de servicios a automatizar la atención al cliente y agendar citas sin esfuerzo.\\n\\n¿Les copa una charla rápida de 2 min para ver si les sirve? Sin compromiso 🙌`,\n    `Buenas! Vi que tienen ${nombre} y me pareció interesante contactarlos. Estamos ayudando a negocios como el suyo a no perder consultas y automatizar lo repetitivo.\\n\\n¿Tienen un minutito? 😊`\n  ],\n  generico: [\n    `Hola! 👋 Vi el negocio de ustedes en ${ciudad} y me pareció interesante contactarlos.\\n\\nEstamos ayudando a comercios de ${rubro} a automatizar tareas del día a día (responder consultas, agendar, gestionar pedidos) para ganar tiempo y no perder clientes.\\n\\n¿Les copa saber un poco más? Sin compromiso 🙌`,\n    `Buenas! Vi ${nombre} y quería escribirles. Trabajamos ayudando a negocios a atender mejor a sus clientes con automatizaciones simples por WhatsApp.\\n\\n¿Tienen 2 minutos para una charla rápida? Sin compromiso 😊`\n  ]\n};\n\n// Clasificar rubro en categoría\nlet categoria = 'generico';\nconst rubroLower = rubro.toLowerCase();\n\nif (['restaurante', 'panadería', 'cafetería', 'bar', 'pizzería', 'delivery', 'food'].some(r => rubroLower.includes(r))) {\n  categoria = 'gastronomia';\n} else if (['peluquería', 'barbería', 'estética', 'spa', 'belleza', 'uñas', 'masaje'].some(r => rubroLower.includes(r))) {\n  categoria = 'estetica';\n} else if (['clínica', 'consultorio', 'dental', 'médico', 'veterinaria', 'óptica', 'salud'].some(r => rubroLower.includes(r))) {\n  categoria = 'salud';\n} else if (['estudio', 'inmobiliaria', 'taller', 'academia', 'gimnasio', 'hotel', 'lavadero'].some(r => rubroLower.includes(r))) {\n  categoria = 'servicios';\n}\n\n// Seleccionar template aleatorio de la categoría\nconst templatesList = templates[categoria];\nconst mensaje = templatesList[Math.floor(Math.random() * templatesList.length)];\n\nreturn {\n  json: {\n    ...lead,\n    mensaje,\n    categoriaRubro: categoria\n  }\n};"
+      },
+      "id": "b2000001-0001-4000-8000-000000000008",
+      "name": "Personalizar Mensaje",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.whatsapp, text: $json.mensaje }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b2000001-0001-4000-8000-000000000009",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2020, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=-- Actualizar estado del lead a contactado\nUPDATE leads SET\n  status = 'contactado',\n  fecha_contacto = NOW(),\n  updated_at = NOW()\nWHERE id = {{ $json.id }};\n\n-- Registrar mensaje enviado\nINSERT INTO mensajes_log (lead_id, tipo, mensaje)\nVALUES ({{ $json.id }}, 'enviado', '{{ $json.mensaje.replace(/'/g, \"''\") }}');\n\n-- Incrementar contador diario\nINSERT INTO envios_diarios (fecha, cantidad)\nVALUES (CURRENT_DATE, 1)\nON CONFLICT (fecha) DO UPDATE SET cantidad = envios_diarios.cantidad + 1;",
+        "options": {}
+      },
+      "id": "b2000001-0001-4000-8000-000000000010",
+      "name": "Registrar Envio",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2240, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "PostgreSQL AI Vanguard"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "b2000001-0001-4000-8000-000000000011",
+      "name": "Fuera de Horario",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [920, 500]
+    },
+    {
+      "parameters": {},
+      "id": "b2000001-0001-4000-8000-000000000012",
+      "name": "Limite Alcanzado",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1360, 500]
+    },
+    {
+      "parameters": {},
+      "id": "b2000001-0001-4000-8000-000000000013",
+      "name": "Sin Leads Nuevos",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1800, 500]
+    }
+  ],
+  "connections": {
+    "Trigger cada 3 min": {
+      "main": [
+        [
+          { "node": "Verificar Horario", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Verificar Horario": {
+      "main": [
+        [
+          { "node": "En Horario", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "En Horario": {
+      "main": [
+        [
+          { "node": "Contar Envios Hoy", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Fuera de Horario", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Contar Envios Hoy": {
+      "main": [
+        [
+          { "node": "Bajo Limite Diario", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Bajo Limite Diario": {
+      "main": [
+        [
+          { "node": "Obtener Mejor Lead", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Limite Alcanzado", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Obtener Mejor Lead": {
+      "main": [
+        [
+          { "node": "Hay Lead Disponible", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Hay Lead Disponible": {
+      "main": [
+        [
+          { "node": "Personalizar Mensaje", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Sin Leads Nuevos", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Personalizar Mensaje": {
+      "main": [
+        [
+          { "node": "Enviar WhatsApp", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Enviar WhatsApp": {
+      "main": [
+        [
+          { "node": "Registrar Envio", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "v1-outbound-campaign-001",
+  "tags": [
+    { "name": "ai-vanguard" },
+    { "name": "outbound" },
+    { "name": "whatsapp" }
+  ]
+}

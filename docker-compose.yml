@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: ai-vanguard-web
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    expose:
+      - "3000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.aivanguard.rule=Host(`${DOMAIN:-aivanguardlabs.com}`)"
+      - "traefik.http.routers.aivanguard.entrypoints=websecure"
+      - "traefik.http.routers.aivanguard.tls.certresolver=letsencrypt"
+      - "traefik.http.services.aivanguard.loadbalancer.server.port=3000"
+      # HTTP → HTTPS redirect
+      - "traefik.http.routers.aivanguard-http.rule=Host(`${DOMAIN:-aivanguardlabs.com}`)"
+      - "traefik.http.routers.aivanguard-http.entrypoints=web"
+      - "traefik.http.routers.aivanguard-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+    networks:
+      - traefik-public
+
+networks:
+  traefik-public:
+    external: true

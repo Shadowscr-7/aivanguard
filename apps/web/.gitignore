@@ -1,0 +1,5 @@
+# .gitignore for web
+node_modules/
+.next/
+out/
+dist/

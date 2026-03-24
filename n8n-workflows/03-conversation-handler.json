@@ -1,0 +1,486 @@
+{
+  "name": "03 - Handler Conversacion IA (Evolution API Webhook)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "evolution-webhook",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "c3000001-0001-4000-8000-000000000001",
+      "name": "Webhook Evolution",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "evolution-webhook-handler"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// Parsea el evento de Evolution API\n// Extrae datos del mensaje recibido\n// ============================================\n\nconst body = $input.first().json.body || $input.first().json;\n\n// Solo procesar eventos de mensaje nuevo\nconst event = body.event || '';\nif (event !== 'messages.upsert') {\n  return [{ json: { skip: true, reason: 'not_message_event', event } }];\n}\n\nconst data = body.data || body;\nconst key = data.key || {};\nconst message = data.message || {};\n\n// Extraer texto del mensaje (soporta varios tipos)\nlet texto = '';\nif (message.conversation) {\n  texto = message.conversation;\n} else if (message.extendedTextMessage && message.extendedTextMessage.text) {\n  texto = message.extendedTextMessage.text;\n} else if (message.buttonsResponseMessage) {\n  texto = message.buttonsResponseMessage.selectedDisplayText || '';\n} else if (message.listResponseMessage) {\n  texto = message.listResponseMessage.title || '';\n}\n\n// Si no hay texto, saltar (puede ser imagen, audio, etc)\nif (!texto || texto.trim().length === 0) {\n  return [{ json: { skip: true, reason: 'no_text_content' } }];\n}\n\n// Extraer número de WhatsApp\nconst remoteJid = key.remoteJid || '';\n\n// Ignorar mensajes de grupos\nif (remoteJid.includes('@g.us')) {\n  return [{ json: { skip: true, reason: 'group_message' } }];\n}\n\nconst whatsapp = remoteJid.replace('@s.whatsapp.net', '');\n\nreturn [{\n  json: {\n    skip: false,\n    whatsapp,\n    texto: texto.trim(),\n    fromMe: key.fromMe || false,\n    messageId: key.id || '',\n    pushName: data.pushName || '',\n    timestamp: data.messageTimestamp || Math.floor(Date.now() / 1000)\n  }\n}];"
+      },
+      "id": "c3000001-0001-4000-8000-000000000002",
+      "name": "Parsear Mensaje",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-not-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            },
+            {
+              "id": "cond-not-from-me",
+              "leftValue": "={{ $json.fromMe }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3000001-0001-4000-8000-000000000003",
+      "name": "Es Mensaje Entrante Valido",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT l.*,\n  COALESCE(\n    (SELECT json_agg(sub ORDER BY sub.ts ASC) FROM (\n      SELECT m.tipo, m.mensaje, m.created_at as ts\n      FROM mensajes_log m\n      WHERE m.lead_id = l.id\n      ORDER BY m.created_at DESC\n      LIMIT 20\n    ) sub),\n    '[]'::json\n  ) as historial\nFROM leads l\nWHERE l.whatsapp = '{{ $json.whatsapp }}'\nAND l.status NOT IN ('blacklist', 'cerrado')\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "c3000001-0001-4000-8000-000000000004",
+      "name": "Buscar Lead en DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [920, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "PostgreSQL AI Vanguard"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-lead-found",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3000001-0001-4000-8000-000000000005",
+      "name": "Lead Encontrado",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// Combina datos del lead con el mensaje recibido\n// Detecta si es un rechazo/negativa\n// ============================================\n\nconst lead = $input.first().json;\nconst mensajeParsed = $('Parsear Mensaje').first().json;\nconst texto = mensajeParsed.texto;\n\n// --- Detección de rechazo ---\nconst rechazos = [\n  'no me interesa',\n  'no gracias',\n  'no, gracias',\n  'no quiero',\n  'dejen de escribir',\n  'no me escriban',\n  'no me contacten',\n  'no me manden',\n  'borrenme',\n  'saquenme',\n  'spam',\n  'bloquear',\n  'no thanks',\n  'not interested',\n  'stop',\n  'basta',\n  'dejen de joder',\n  'no molesten'\n];\n\nconst textoLower = texto.toLowerCase().trim();\nconst esRechazo = rechazos.some(r => textoLower.includes(r)) || \n                  textoLower === 'no' || \n                  textoLower === 'no.';\n\nreturn [{\n  json: {\n    // Datos del lead (de la DB)\n    id: lead.id,\n    nombre: lead.nombre,\n    rubro: lead.rubro,\n    ciudad: lead.ciudad,\n    whatsapp: lead.whatsapp,\n    website: lead.website,\n    status: lead.status,\n    historial: lead.historial,\n    // Datos del mensaje entrante\n    texto_recibido: texto,\n    pushName: mensajeParsed.pushName,\n    // Análisis\n    esRechazo\n  }\n}];"
+      },
+      "id": "c3000001-0001-4000-8000-000000000006",
+      "name": "Analizar Mensaje",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1360, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-is-rejection",
+              "leftValue": "={{ $json.esRechazo }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3000001-0001-4000-8000-000000000007",
+      "name": "Es Rechazo",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1580, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=-- Marcar lead como blacklist\nUPDATE leads SET status = 'blacklist', updated_at = NOW()\nWHERE id = {{ $json.id }};\n\n-- Registrar mensaje recibido\nINSERT INTO mensajes_log (lead_id, tipo, mensaje)\nVALUES ({{ $json.id }}, 'recibido', '{{ $json.texto_recibido.replace(/'/g, \"''\") }}');",
+        "options": {}
+      },
+      "id": "c3000001-0001-4000-8000-000000000008",
+      "name": "Blacklist en DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1800, 120],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "PostgreSQL AI Vanguard"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.whatsapp, text: '¡Entendido! Disculpá la molestia, no te vamos a contactar más. ¡Éxitos! 🙌' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "c3000001-0001-4000-8000-000000000009",
+      "name": "Enviar Despedida",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2020, 120]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// Prepara el contexto para la IA (OpenAI)\n// Construye el prompt del sistema + historial\n// ============================================\n\nconst item = $input.first().json;\nconst historial = typeof item.historial === 'string' \n  ? JSON.parse(item.historial || '[]') \n  : (item.historial || []);\n\nconst systemPrompt = `Sos un asesor comercial de AI Vanguard, una empresa que ayuda a comercios a automatizar y digitalizar sus operaciones. Tu objetivo es generar interés y agendar una reunión corta (10-15 minutos) por videollamada.\n\nPERSONALIDAD:\n- Hablás en español rioplatense (uruguayo)\n- Sos amable, profesional y directo\n- No sos insistente ni agresivo\n- Usás un tono cercano pero respetuoso\n- Mensajes CORTOS (máximo 3-4 líneas por mensaje, como WhatsApp real)\n\nREGLAS ESTRICTAS:\n1. NUNCA menciones precios, costos, tarifas ni planes\n2. NUNCA uses tecnicismos complejos (no digas \"API\", \"webhook\", \"CRM\" a menos que el lead lo use primero)\n3. Si te preguntan cuánto cuesta, decí: \"Depende mucho de cada negocio, por eso preferimos hacer una charla corta para entender bien qué necesitan. ¿Te copa una llamada de 10 min?\"\n4. Si dicen que NO o que no les interesa, respondé amablemente y no insistas más.\n5. Máximo 2-3 mensajes antes de proponer la reunión\n6. NO uses formato markdown, bullet points ni nada raro. Escribí como en WhatsApp normal.\n7. Podés usar emojis pero con moderación (1-2 por mensaje máximo)\n\nFLUJO DE CONVERSACIÓN:\n1. Si preguntan \"¿de qué se trata?\" → Explicá brevemente: ayudás a negocios como el suyo a recibir más clientes y atenderlos mejor con automatizaciones simples (responder consultas automáticamente, agendar turnos, gestionar pedidos, etc.)\n2. Hacé 1-2 preguntas para entender su situación:\n   - \"¿Cómo manejan hoy las consultas que les llegan por WhatsApp/redes?\"\n   - \"¿Qué es lo que más tiempo les consume del día a día?\"\n3. Basándote en su respuesta, mencioná UN ejemplo concreto de cómo podrías ayudarles\n4. Proponé la reunión: \"¿Te parece si coordinamos 10 minutos por videollamada esta semana? Sin compromiso.\"\n\nDETECCIÓN DE INTENCIONES (OBLIGATORIO - siempre agregar al final):\n- Si el lead acepta la reunión o pregunta por horarios → agregá al final de tu mensaje exactamente: [INTENT:AGENDAR]\n- Si el lead rechaza o pide que no lo contacten más → agregá al final: [INTENT:BLACKLIST]\n- En cualquier otro caso → agregá al final: [INTENT:SEGUIR]\n\nCONTEXTO DEL LEAD:\nNombre del negocio: ${item.nombre}\nRubro: ${item.rubro}\nCiudad: ${item.ciudad}\nWebsite: ${item.website || 'No tiene'}\nEstado actual: ${item.status}`;\n\n// Construir array de mensajes para OpenAI\nconst messages = [\n  { role: 'system', content: systemPrompt }\n];\n\n// Agregar historial de conversación\nif (Array.isArray(historial)) {\n  for (const msg of historial) {\n    messages.push({\n      role: msg.tipo === 'enviado' ? 'assistant' : 'user',\n      content: msg.mensaje\n    });\n  }\n}\n\n// Agregar mensaje actual\nmessages.push({\n  role: 'user',\n  content: item.texto_recibido\n});\n\nreturn [{\n  json: {\n    ...item,\n    openaiMessages: messages\n  }\n}];"
+      },
+      "id": "c3000001-0001-4000-8000-000000000010",
+      "name": "Preparar Prompt IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 440]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "Authorization", "value": "=Bearer {{ $env.OPENAI_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-4o-mini', messages: $json.openaiMessages, temperature: 0.7, max_tokens: 300 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "c3000001-0001-4000-8000-000000000011",
+      "name": "OpenAI Chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2020, 440]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// Procesa la respuesta de OpenAI\n// Extrae el texto y detecta la intención\n// ============================================\n\nconst openaiResponse = $input.first().json;\nconst leadData = $('Preparar Prompt IA').first().json;\n\n// Extraer respuesta del modelo\nconst aiMessage = openaiResponse.choices[0].message.content;\n\n// Detectar intención\nlet intent = 'SEGUIR';\nif (aiMessage.includes('[INTENT:AGENDAR]')) {\n  intent = 'AGENDAR';\n} else if (aiMessage.includes('[INTENT:BLACKLIST]')) {\n  intent = 'BLACKLIST';\n}\n\n// Limpiar mensaje (quitar tags de intención)\nconst mensajeLimpio = aiMessage\n  .replace(/\\[INTENT:\\w+\\]/g, '')\n  .trim();\n\nreturn [{\n  json: {\n    id: leadData.id,\n    nombre: leadData.nombre,\n    rubro: leadData.rubro,\n    ciudad: leadData.ciudad,\n    whatsapp: leadData.whatsapp,\n    status: leadData.status,\n    texto_recibido: leadData.texto_recibido,\n    respuestaIA: mensajeLimpio,\n    intent\n  }\n}];"
+      },
+      "id": "c3000001-0001-4000-8000-000000000012",
+      "name": "Procesar Respuesta IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2240, 440]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.EVOLUTION_API_URL }}/message/sendText/{{ $env.EVOLUTION_INSTANCE }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "apikey", "value": "={{ $env.EVOLUTION_API_KEY }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.whatsapp, text: $json.respuestaIA }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "c3000001-0001-4000-8000-000000000013",
+      "name": "Enviar Respuesta WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2460, 440]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=-- Registrar mensaje recibido\nINSERT INTO mensajes_log (lead_id, tipo, mensaje)\nVALUES ({{ $json.id }}, 'recibido', '{{ $json.texto_recibido.replace(/'/g, \"''\") }}');\n\n-- Registrar respuesta enviada\nINSERT INTO mensajes_log (lead_id, tipo, mensaje)\nVALUES ({{ $json.id }}, 'enviado', '{{ $json.respuestaIA.replace(/'/g, \"''\") }}');\n\n-- Actualizar estado del lead según la intención\nUPDATE leads SET\n  status = CASE\n    WHEN '{{ $json.intent }}' = 'AGENDAR' THEN 'agendado'\n    WHEN '{{ $json.intent }}' = 'BLACKLIST' THEN 'blacklist'\n    WHEN status = 'contactado' THEN 'respondido'\n    WHEN status = 'respondido' THEN 'interesado'\n    ELSE status\n  END,\n  fecha_respuesta = COALESCE(fecha_respuesta, NOW()),\n  fecha_agendado = CASE WHEN '{{ $json.intent }}' = 'AGENDAR' THEN NOW() ELSE fecha_agendado END,\n  updated_at = NOW()\nWHERE id = {{ $json.id }};",
+        "options": {}
+      },
+      "id": "c3000001-0001-4000-8000-000000000014",
+      "name": "Guardar Conversacion",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2680, 440],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "PostgreSQL AI Vanguard"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-wants-meeting",
+              "leftValue": "={{ $json.intent }}",
+              "rightValue": "AGENDAR",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3000001-0001-4000-8000-000000000015",
+      "name": "Quiere Agendar",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2900, 440]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOTIFICATION_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: '🔔 *NUEVO LEAD QUIERE AGENDAR*\\n\\n📍 Negocio: ' + $json.nombre + '\\n🏷️ Rubro: ' + $json.rubro + '\\n📱 WhatsApp: ' + $json.whatsapp + '\\n🏙️ Ciudad: ' + $json.ciudad + '\\n\\nÚltimo mensaje: ' + $json.texto_recibido + '\\n\\n👉 Contactar AHORA para coordinar la reunión' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c3000001-0001-4000-8000-000000000016",
+      "name": "Notificar Equipo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3120, 340]
+    },
+    {
+      "parameters": {},
+      "id": "c3000001-0001-4000-8000-000000000017",
+      "name": "Ignorar Mensaje",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [920, 120]
+    },
+    {
+      "parameters": {},
+      "id": "c3000001-0001-4000-8000-000000000018",
+      "name": "Lead No Encontrado",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1360, 120]
+    },
+    {
+      "parameters": {},
+      "id": "c3000001-0001-4000-8000-000000000019",
+      "name": "Seguir Conversacion",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3120, 540]
+    }
+  ],
+  "connections": {
+    "Webhook Evolution": {
+      "main": [
+        [
+          { "node": "Parsear Mensaje", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parsear Mensaje": {
+      "main": [
+        [
+          { "node": "Es Mensaje Entrante Valido", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Es Mensaje Entrante Valido": {
+      "main": [
+        [
+          { "node": "Buscar Lead en DB", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Ignorar Mensaje", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Buscar Lead en DB": {
+      "main": [
+        [
+          { "node": "Lead Encontrado", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Lead Encontrado": {
+      "main": [
+        [
+          { "node": "Analizar Mensaje", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Lead No Encontrado", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Analizar Mensaje": {
+      "main": [
+        [
+          { "node": "Es Rechazo", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Es Rechazo": {
+      "main": [
+        [
+          { "node": "Blacklist en DB", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Preparar Prompt IA", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Blacklist en DB": {
+      "main": [
+        [
+          { "node": "Enviar Despedida", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Preparar Prompt IA": {
+      "main": [
+        [
+          { "node": "OpenAI Chat", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "OpenAI Chat": {
+      "main": [
+        [
+          { "node": "Procesar Respuesta IA", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Procesar Respuesta IA": {
+      "main": [
+        [
+          { "node": "Enviar Respuesta WhatsApp", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Enviar Respuesta WhatsApp": {
+      "main": [
+        [
+          { "node": "Guardar Conversacion", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Guardar Conversacion": {
+      "main": [
+        [
+          { "node": "Quiere Agendar", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Quiere Agendar": {
+      "main": [
+        [
+          { "node": "Notificar Equipo", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Seguir Conversacion", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "v1-conversation-handler-001",
+  "tags": [
+    { "name": "ai-vanguard" },
+    { "name": "conversation" },
+    { "name": "ai-agent" }
+  ]
+}

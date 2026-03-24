@@ -1,0 +1,250 @@
+{
+  "name": "01 - Lead Scraper Google Maps LATAM",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "a1000001-0001-4000-8000-000000000001",
+      "name": "Trigger Diario 8AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// Genera queries de búsqueda para Google Maps\n// Rubros y ciudades de Uruguay (expandible a LATAM)\n// ============================================\n\nconst rubros = [\n  'restaurante',\n  'peluquería',\n  'barbería',\n  'clínica dental',\n  'estudio contable',\n  'inmobiliaria',\n  'veterinaria',\n  'gimnasio',\n  'taller mecánico',\n  'óptica',\n  'centro de estética',\n  'spa',\n  'panadería',\n  'ferretería',\n  'hotel',\n  'lavadero de autos',\n  'florería',\n  'academia',\n  'estudio de yoga',\n  'consultorio médico'\n];\n\nconst ciudades = [\n  { nombre: 'Montevideo', lat: -34.9011, lng: -56.1645, pais: 'Uruguay' },\n  { nombre: 'Punta del Este', lat: -34.9667, lng: -54.9500, pais: 'Uruguay' },\n  { nombre: 'Colonia del Sacramento', lat: -34.4626, lng: -57.8400, pais: 'Uruguay' },\n  { nombre: 'Salto', lat: -31.3833, lng: -57.9667, pais: 'Uruguay' },\n  { nombre: 'Paysandú', lat: -32.3214, lng: -58.0756, pais: 'Uruguay' },\n  { nombre: 'Maldonado', lat: -34.9000, lng: -54.9500, pais: 'Uruguay' },\n  { nombre: 'Rivera', lat: -30.9050, lng: -55.5506, pais: 'Uruguay' }\n];\n\n// Seleccionar aleatoriamente 3-5 combinaciones para hoy\n// (no queremos hacer 140 búsquedas de golpe)\nconst queries = [];\nconst maxQueriesHoy = 5;\n\nconst shuffled = [];\nfor (const ciudad of ciudades) {\n  for (const rubro of rubros) {\n    shuffled.push({ ciudad, rubro });\n  }\n}\n\n// Shuffle Fisher-Yates\nfor (let i = shuffled.length - 1; i > 0; i--) {\n  const j = Math.floor(Math.random() * (i + 1));\n  [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];\n}\n\nconst seleccion = shuffled.slice(0, maxQueriesHoy);\n\nfor (const { ciudad, rubro } of seleccion) {\n  queries.push({\n    json: {\n      query: `${rubro} en ${ciudad.nombre}`,\n      rubro: rubro,\n      ciudad: ciudad.nombre,\n      pais: ciudad.pais,\n      coordinates: `@${ciudad.lat},${ciudad.lng},14z`,\n      lat: ciudad.lat,\n      lng: ciudad.lng\n    }\n  });\n}\n\nreturn queries;"
+      },
+      "id": "a1000001-0001-4000-8000-000000000002",
+      "name": "Generar Busquedas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "a1000001-0001-4000-8000-000000000003",
+      "name": "Procesar por Lotes",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://serpapi.com/search.json",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "engine", "value": "google_maps" },
+            { "name": "q", "value": "={{ $json.query }}" },
+            { "name": "ll", "value": "={{ $json.coordinates }}" },
+            { "name": "api_key", "value": "={{ $env.SERPAPI_KEY }}" },
+            { "name": "hl", "value": "es" },
+            { "name": "num", "value": "20" }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "a1000001-0001-4000-8000-000000000004",
+      "name": "Google Maps SerpAPI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ============================================\n// Parsea resultados de SerpAPI Google Maps\n// Extrae datos de comercios y normaliza teléfonos\n// ============================================\n\nconst input = $input.first().json;\nconst results = input.local_results || [];\nconst searchMeta = $('Procesar por Lotes').first().json;\n\nconst leads = [];\n\nfor (const r of results) {\n  // Saltar si no tiene teléfono (no podemos contactar por WA)\n  if (!r.phone) continue;\n  \n  // Normalizar teléfono a formato internacional Uruguay (+598)\n  let phone = r.phone.replace(/[\\s\\-\\(\\)\\.]/g, '');\n  \n  // Si empieza con 0, quitar el 0 y agregar +598\n  if (phone.startsWith('0')) {\n    phone = '+598' + phone.substring(1);\n  }\n  // Si no empieza con +, agregar +598\n  else if (!phone.startsWith('+')) {\n    if (phone.startsWith('598')) {\n      phone = '+' + phone;\n    } else {\n      phone = '+598' + phone;\n    }\n  }\n  \n  // Solo números válidos de Uruguay (9-10 dígitos después del +598)\n  const digits = phone.replace('+598', '');\n  if (digits.length < 7 || digits.length > 10) continue;\n  \n  // Formatear para WhatsApp (sin + ni espacios)\n  const whatsapp = phone.replace('+', '');\n  \n  leads.push({\n    json: {\n      nombre: r.title || 'Sin nombre',\n      rubro: searchMeta.rubro || r.type || 'comercio',\n      ciudad: searchMeta.ciudad || '',\n      pais: searchMeta.pais || 'Uruguay',\n      whatsapp: whatsapp,\n      website: r.website || '',\n      direccion: r.address || '',\n      rating: r.rating || 0,\n      reviews_count: r.reviews || 0,\n      origen: 'google_maps',\n      thumbnail: r.thumbnail || ''\n    }\n  });\n}\n\nif (leads.length === 0) {\n  return [{ json: { skip: true, message: 'No se encontraron resultados con teléfono' } }];\n}\n\nreturn leads;"
+      },
+      "id": "a1000001-0001-4000-8000-000000000005",
+      "name": "Parsear Resultados",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-skip-check",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000001-0001-4000-8000-000000000006",
+      "name": "Hay Resultados",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1360, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================\n// Calcula score de prospecto basado en criterios\n// Mayor score = mejor candidato para ofrecer servicios\n// ============================================\n\nconst lead = $json;\nlet score = 50; // Base\n\n// +20 si tiene website (podemos evaluar si es obsoleta)\nif (lead.website && lead.website.length > 0) {\n  score += 10;\n}\n\n// +15 si NO tiene website (necesitan presencia digital)\nif (!lead.website || lead.website.length === 0) {\n  score += 15;\n}\n\n// Rating bajo = posible negocio que necesita ayuda\nif (lead.rating > 0 && lead.rating < 4.0) {\n  score += 10;\n}\n\n// Pocas reviews = negocio chico, buen target\nif (lead.reviews_count > 0 && lead.reviews_count < 50) {\n  score += 10;\n}\n\n// Muchas reviews = negocio establecido, puede pagar\nif (lead.reviews_count >= 50) {\n  score += 5;\n}\n\n// Rubros con mayor necesidad de automatización\nconst rubrosAltos = ['restaurante', 'peluquería', 'barbería', 'clínica dental', \n  'veterinaria', 'centro de estética', 'spa', 'gimnasio', 'hotel'];\nif (rubrosAltos.some(r => lead.rubro.toLowerCase().includes(r))) {\n  score += 15;\n}\n\n// Cap at 100\nscore = Math.min(score, 100);\n\nreturn {\n  json: {\n    ...lead,\n    score_prospecto: score\n  }\n};"
+      },
+      "id": "a1000001-0001-4000-8000-000000000007",
+      "name": "Calcular Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1580, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO leads (nombre, rubro, ciudad, pais, whatsapp, website, direccion, rating, reviews_count, origen, score_prospecto, status)\nVALUES (\n  '{{ $json.nombre.replace(/'/g, \"''\") }}',\n  '{{ $json.rubro.replace(/'/g, \"''\") }}',\n  '{{ $json.ciudad }}',\n  '{{ $json.pais }}',\n  '{{ $json.whatsapp }}',\n  '{{ $json.website.replace(/'/g, \"''\") }}',\n  '{{ $json.direccion.replace(/'/g, \"''\") }}',\n  {{ $json.rating || 0 }},\n  {{ $json.reviews_count || 0 }},\n  '{{ $json.origen }}',\n  {{ $json.score_prospecto }},\n  'nuevo'\n)\nON CONFLICT (whatsapp) DO UPDATE SET\n  rating = EXCLUDED.rating,\n  reviews_count = EXCLUDED.reviews_count,\n  score_prospecto = GREATEST(leads.score_prospecto, EXCLUDED.score_prospecto),\n  updated_at = NOW()\nRETURNING id, nombre, whatsapp, status;",
+        "options": {}
+      },
+      "id": "a1000001-0001-4000-8000-000000000008",
+      "name": "Guardar en DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1800, 300],
+      "credentials": {
+        "postgres": {
+          "id": "POSTGRES_CREDENTIAL_ID",
+          "name": "PostgreSQL AI Vanguard"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 8,
+        "unit": "seconds"
+      },
+      "id": "a1000001-0001-4000-8000-000000000009",
+      "name": "Esperar entre Lotes",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1580, 520],
+      "webhookId": "wait-scraper-loop"
+    },
+    {
+      "parameters": {},
+      "id": "a1000001-0001-4000-8000-000000000010",
+      "name": "Fin Sin Resultados",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1580, 120]
+    }
+  ],
+  "connections": {
+    "Trigger Diario 8AM": {
+      "main": [
+        [
+          { "node": "Generar Busquedas", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Generar Busquedas": {
+      "main": [
+        [
+          { "node": "Procesar por Lotes", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Procesar por Lotes": {
+      "main": [
+        [
+          { "node": "Google Maps SerpAPI", "type": "main", "index": 0 }
+        ],
+        []
+      ]
+    },
+    "Google Maps SerpAPI": {
+      "main": [
+        [
+          { "node": "Parsear Resultados", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parsear Resultados": {
+      "main": [
+        [
+          { "node": "Hay Resultados", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Hay Resultados": {
+      "main": [
+        [
+          { "node": "Calcular Score", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Fin Sin Resultados", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Calcular Score": {
+      "main": [
+        [
+          { "node": "Guardar en DB", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Guardar en DB": {
+      "main": [
+        [
+          { "node": "Esperar entre Lotes", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Esperar entre Lotes": {
+      "main": [
+        [
+          { "node": "Procesar por Lotes", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Fin Sin Resultados": {
+      "main": [
+        [
+          { "node": "Procesar por Lotes", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "v1-lead-scraper-001",
+  "tags": [
+    { "name": "ai-vanguard" },
+    { "name": "lead-generation" }
+  ]
+}
