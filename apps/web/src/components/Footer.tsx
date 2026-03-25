@@ -9,6 +9,7 @@ const footerLinks = {
     { name: 'FlowMind', href: 'https://flowmind.aivanguardlabs.com' },
     { name: 'Closer AI', href: 'https://closerai.aivanguardlabs.com' },
     { name: 'ScoutLeague', href: 'https://scoutleague.aivanguardlabs.com' },
+    { name: 'NexusForge', href: 'https://nexusforge.aivanguardlabs.com' },
   ],
   Empresa: [
     { name: 'Sobre nosotros', href: '#' },

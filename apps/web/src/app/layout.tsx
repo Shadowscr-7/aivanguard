@@ -4,7 +4,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'AI Vanguard | El ecosistema de IA que automatiza tu negocio',
   description:
-    'Marketing, ventas, finanzas y operaciones impulsadas por inteligencia artificial. Syndra, InmoFlow, FlowMind, Closer AI y ScoutLeague en un solo ecosistema.',
+    'Marketing, ventas, finanzas, operaciones y game design impulsados por inteligencia artificial. Syndra, InmoFlow, FlowMind, Closer AI, ScoutLeague y NexusForge en un solo ecosistema.',
   keywords: [
     'inteligencia artificial',
     'automatización',
@@ -18,6 +18,9 @@ export const metadata: Metadata = {
     'FlowMind',
     'Closer AI',
     'ScoutLeague',
+    'NexusForge',
+    'card game',
+    'game design',
   ],
   openGraph: {
     title: 'AI Vanguard | El ecosistema de IA que automatiza tu negocio',
