@@ -6,6 +6,7 @@ import { useState } from 'react';
 const products = [
   {
     name: 'SYNDRA',
+    url: 'https://syndra.aivanguardlabs.com',
     tagline: 'Tu equipo de marketing trabajando 24/7',
     description:
       'Automatización de contenido y marketing con IA. Genera copies, imágenes y videos. Publica en redes sociales y aprende tu estilo de marca.',
@@ -20,6 +21,7 @@ const products = [
   },
   {
     name: 'INMOFLOW',
+    url: 'https://inmoflow.aivanguardlabs.com',
     tagline: 'Convierte consultas en ventas sin esfuerzo',
     description:
       'CRM inmobiliario potenciado con IA. Captura, clasifica y da seguimiento a leads. Automatiza respuestas y agenda visitas sin intervención manual.',
@@ -34,6 +36,7 @@ const products = [
   },
   {
     name: 'FLOWMIND',
+    url: 'https://flowmind.aivanguardlabs.com',
     tagline: 'Tu mente financiera aumentada por IA',
     description:
       'Gestión financiera personal con inteligencia artificial. Controla gastos, recibe análisis inteligentes y recomendaciones personalizadas para evolucionar financieramente.',
@@ -48,6 +51,7 @@ const products = [
   },
   {
     name: 'CLOSER AI',
+    url: 'https://closerai.aivanguardlabs.com',
     tagline: 'Agentes que venden por ti',
     description:
       'Centro de agentes IA para ventas multicanal. Responde automáticamente en WhatsApp, Instagram y Messenger. Cierra ventas y gestiona reservas sin descanso.',
@@ -62,6 +66,7 @@ const products = [
   },
   {
     name: 'SCOUTLEAGUE',
+    url: 'https://scoutleague.aivanguardlabs.com',
     tagline: 'El futuro del scouting deportivo',
     description:
       'Plataforma de scouting futbolístico con IA. Analiza estadísticas, rendimiento y evolución de jugadores. Videos, highlights y perfiles profesionales en un solo lugar.',
@@ -204,8 +209,11 @@ export default function Ecosystem() {
                 </ul>
 
                 {/* CTA */}
-                <button
-                  className="w-full py-3 rounded-xl text-sm font-semibold transition-all duration-300 border group-hover:scale-[1.02]"
+                <a
+                  href={product.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block w-full py-3 rounded-xl text-sm font-semibold transition-all duration-300 border group-hover:scale-[1.02] text-center"
                   style={{
                     borderColor: `${product.color}30`,
                     color: product.color,
@@ -213,7 +221,7 @@ export default function Ecosystem() {
                   }}
                 >
                   Descubrir {product.name}
-                </button>
+                </a>
               </div>
             </motion.div>
           ))}

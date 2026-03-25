@@ -4,11 +4,11 @@ import Image from 'next/image';
 
 const footerLinks = {
   Plataformas: [
-    { name: 'Syndra', href: '#ecosistema' },
-    { name: 'InmoFlow', href: '#ecosistema' },
-    { name: 'FlowMind', href: '#ecosistema' },
-    { name: 'Closer AI', href: '#ecosistema' },
-    { name: 'ScoutLeague', href: '#ecosistema' },
+    { name: 'Syndra', href: 'https://syndra.aivanguardlabs.com' },
+    { name: 'InmoFlow', href: 'https://inmoflow.aivanguardlabs.com' },
+    { name: 'FlowMind', href: 'https://flowmind.aivanguardlabs.com' },
+    { name: 'Closer AI', href: 'https://closerai.aivanguardlabs.com' },
+    { name: 'ScoutLeague', href: 'https://scoutleague.aivanguardlabs.com' },
   ],
   Empresa: [
     { name: 'Sobre nosotros', href: '#' },
