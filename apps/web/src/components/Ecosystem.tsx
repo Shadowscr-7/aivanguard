@@ -94,7 +94,9 @@ const products = [
       </svg>
     ),
   },
-]; = {
+];
+
+const containerVariants = {
   hidden: {},
   visible: {
     transition: {
